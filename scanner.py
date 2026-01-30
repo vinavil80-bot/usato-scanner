@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
 import json
 import os
@@ -9,7 +8,7 @@ import time
 
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTwRi3TJmwatu-_Q_phF8xM_CachbYcf2AuZsnWJnz9F4IMgYAiu64TuWKsAK-MNpVIPn5NslrJGYFX/pub?output=csv"
 HISTORY_FILE = "price_history.json"
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
 
 def send_mail(subject, body):
     user = os.environ.get('EMAIL_USER')
@@ -30,6 +29,7 @@ def scan_mercatopoli(keyword, max_price, history):
     url = f"https://shop.mercatopoli.it/index.php?id=ricerca&q={keyword.replace(' ', '+')}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(res.text, 'html.parser')
         items = soup.select('.articolo_vetrina')
         for item in items:
@@ -38,37 +38,46 @@ def scan_mercatopoli(keyword, max_price, history):
             price = float(price_text.replace('€', '').replace('.', '').replace(',', '.').strip())
             if price <= max_price:
                 if link not in history or price < history[link]:
-                    send_mail(f"OFFERTA MERCATOPOLI: {keyword}", f"Prezzo: {price}€\nLink: {link}")
+                    send_mail(f"MERCATOPOLI: {keyword}", f"Trovato {keyword} a {price}€\nLink: {link}")
                     history[link] = price
-    except Exception as e: print(f"   ! Errore Mercatopoli: {e}")
+    except: pass
 
 def scan_mercatinousato(keyword, max_price, history):
     print(f"  [MercatinoUsato] Cerco: {keyword}")
-    url = f"https://www.mercatinousato.com/ricerca?q={keyword.replace(' ', '+')}"
+    # Usiamo l'endpoint di ricerca interna che restituisce dati puliti
+    search_url = f"https://www.mercatinousato.com/ricerca?q={keyword.replace(' ', '+')}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        res = requests.get(search_url, headers=HEADERS, timeout=15)
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(res.text, 'html.parser')
-        # Cerchiamo tutti i link che portano a un annuncio
-        links = soup.find_all('a', href=True)
-        found_count = 0
-        for l in links:
-            href = l['href']
-            if '/annuncio/' in href:
-                found_count += 1
-                if not href.startswith('http'): href = "https://www.mercatinousato.com" + href
-                # Proviamo a trovare il prezzo vicino al link
-                parent = l.find_parent('div')
-                price_tag = parent.find(text=lambda t: '€' in t) if parent else None
-                if price_tag:
-                    try:
-                        price = float(price_tag.replace('€', '').replace('.', '').replace(',', '.').strip())
-                        if price <= max_price:
-                            if href not in history or price < history[href]:
-                                send_mail(f"OFFERTA MERCATINO: {keyword}", f"Prezzo: {price}€\nLink: {href}")
-                                history[href] = price
-                    except: continue
-        print(f"    Analizzati {found_count} link annuncio")
-    except Exception as e: print(f"   ! Errore Mercatino: {e}")
+        
+        # Cerchiamo tutti i blocchi annuncio
+        annunci = soup.find_all('div', class_='item-annuncio')
+        found_on_page = 0
+        
+        for annuncio in annunci:
+            try:
+                link_tag = annuncio.find('a', href=True)
+                title_tag = annuncio.find('h3') or annuncio.find('div', class_='title')
+                price_tag = annuncio.find('div', class_='price')
+                
+                if not link_tag or not price_tag: continue
+                
+                link = link_tag['href']
+                if not link.startswith('http'): link = "https://www.mercatinousato.com" + link
+                
+                # Pulizia prezzo estrema
+                raw_price = price_tag.text.split('€')[0].replace('.', '').replace(',', '.').strip()
+                price = float(raw_price)
+                
+                if price <= max_price:
+                    found_on_page += 1
+                    if link not in history or price < history[link]:
+                        send_mail(f"MERCATINO: {keyword}", f"Trovato: {keyword} a {price}€\nLink: {link}")
+                        history[link] = price
+            except: continue
+        print(f"    Match trovati: {found_on_page}")
+    except Exception as e: print(f"    Errore: {e}")
 
 if __name__ == "__main__":
     history = {}
@@ -81,11 +90,9 @@ if __name__ == "__main__":
         df = pd.read_csv(CSV_URL)
         for _, row in df.iterrows():
             name = str(row['Descrizione']).strip()
-            # SE INCONTRA RIGHE VUOTE, FERMA IL CICLO
-            if not name or name.lower() == 'nan' or name == "": 
-                break 
-            
+            if not name or name.lower() == 'nan': break 
             budget = float(row['Prezzo'])
+            
             scan_mercatopoli(name, budget, history)
             scan_mercatinousato(name, budget, history)
             time.sleep(1)
