@@ -1,5 +1,4 @@
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 import pandas as pd
 import json
 import os
@@ -9,66 +8,49 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTwRi3TJmwatu-_Q_phF8
 HISTORY_FILE = "price_history.json"
 BASE_URL = "https://www.mercatinousato.com"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/121.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "it-IT,it;q=0.9",
-}
-
-def scan_global_search(keyword, max_price, history):
+def scan_keyword(page, keyword, max_price, history):
     print(f"\n🔍 RICERCA: {keyword} (max {max_price}€)")
-    page = 1
 
-    while page <= 3:  # prime 3 pagine
-        url = f"{BASE_URL}/ricerca?q={keyword.replace(' ', '+')}&page={page}"
-        r = requests.get(url, headers=HEADERS, timeout=20)
+    search_url = f"{BASE_URL}/ricerca?q={keyword.replace(' ', '+')}"
+    page.goto(search_url, timeout=60000)
+    page.wait_for_timeout(3000)
 
-        if r.status_code != 200 or len(r.text) < 5000:
-            break
+    links = set(page.eval_on_selector_all(
+        "a[href^='/annuncio/']",
+        "els => els.map(e => e.href)"
+    ))
 
-        soup = BeautifulSoup(r.text, "html.parser")
+    print(f"   annunci trovati: {len(links)}")
 
-        links = set(
-            BASE_URL + a["href"]
-            for a in soup.select("a[href^='/annuncio/']")
-        )
+    for link in links:
+        if link in history:
+            continue
 
-        if not links:
-            break
+        try:
+            page.goto(link, timeout=60000)
+            page.wait_for_timeout(2000)
 
-        for link in links:
-            if link in history:
+            price_el = page.query_selector("span[itemprop='price']")
+            if not price_el:
                 continue
 
-            try:
-                r_item = requests.get(link, headers=HEADERS, timeout=20)
-                s_item = BeautifulSoup(r_item.text, "html.parser")
-
-                price_tag = s_item.find("span", itemprop="price")
-                if not price_tag:
-                    continue
-
-                price = float(price_tag.text.replace(",", "."))
-                if price > max_price:
-                    continue
-
-                title = s_item.find("h1")
-                text = title.text.lower() if title else ""
-
-                if not all(w in text for w in keyword.lower().split()):
-                    continue
-
-                print(f"   ✅ MATCH: {price}€ → {link}")
-                history[link] = price
-
-            except:
+            price = float(price_el.inner_text().replace(",", "."))
+            if price > max_price:
                 continue
 
-        page += 1
-        time.sleep(2)
+            title = page.query_selector("h1")
+            title_text = title.inner_text().lower() if title else ""
+
+            if not all(w in title_text for w in keyword.lower().split()):
+                continue
+
+            print(f"   ✅ MATCH {price}€ → {link}")
+            history[link] = price
+
+        except:
+            continue
+
+        time.sleep(1)
 
 if __name__ == "__main__":
     history = {}
@@ -78,13 +60,19 @@ if __name__ == "__main__":
 
     df = pd.read_csv(CSV_URL)
 
-    for _, row in df.iterrows():
-        keyword = str(row["Descrizione"]).strip()
-        if not keyword or keyword.lower() == "nan":
-            break
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-        max_price = float(row["Prezzo"])
-        scan_global_search(keyword, max_price, history)
+        for _, row in df.iterrows():
+            keyword = str(row["Descrizione"]).strip()
+            if not keyword or keyword.lower() == "nan":
+                break
+
+            max_price = float(row["Prezzo"])
+            scan_keyword(page, keyword, max_price, history)
+
+        browser.close()
 
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
