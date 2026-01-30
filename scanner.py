@@ -8,7 +8,11 @@ import time
 
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTwRi3TJmwatu-_Q_phF8xM_CachbYcf2AuZsnWJnz9F4IMgYAiu64TuWKsAK-MNpVIPn5NslrJGYFX/pub?output=csv"
 HISTORY_FILE = "price_history.json"
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'X-Requested-With': 'XMLHttpRequest'
+}
 
 def send_mail(subject, body):
     user = os.environ.get('EMAIL_USER')
@@ -38,46 +42,63 @@ def scan_mercatopoli(keyword, max_price, history):
             price = float(price_text.replace('€', '').replace('.', '').replace(',', '.').strip())
             if price <= max_price:
                 if link not in history or price < history[link]:
-                    send_mail(f"MERCATOPOLI: {keyword}", f"Trovato {keyword} a {price}€\nLink: {link}")
+                    send_mail(f"OFFERTA MERCATOPOLI: {keyword}", f"Prezzo: {price}€\nLink: {link}")
                     history[link] = price
     except: pass
 
 def scan_mercatinousato(keyword, max_price, history):
     print(f"  [MercatinoUsato] Cerco: {keyword}")
-    # Usiamo l'endpoint di ricerca interna che restituisce dati puliti
-    search_url = f"https://www.mercatinousato.com/ricerca?q={keyword.replace(' ', '+')}"
+    # ATTENZIONE: Usiamo l'endpoint API reale che restituisce i dati
+    api_url = f"https://www.mercatinousato.com/ricerca/search?q={keyword.replace(' ', '+')}"
     try:
-        res = requests.get(search_url, headers=HEADERS, timeout=15)
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(res.text, 'html.parser')
+        res = requests.get(api_url, headers=HEADERS, timeout=15)
+        data = res.json() # Il sito risponde con un file JSON, non HTML!
         
-        # Cerchiamo tutti i blocchi annuncio
-        annunci = soup.find_all('div', class_='item-annuncio')
-        found_on_page = 0
+        found_count = 0
+        # Il JSON del sito ha una struttura con 'items' o 'results'
+        annunci = data.get('results', []) or data.get('items', [])
         
+        # Se il JSON è una stringa HTML (a volte lo fanno), usiamo BeautifulSoup
+        if isinstance(data, dict) and 'html' in data:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(data['html'], 'html.parser')
+            annunci = soup.select('.item-annuncio')
+            
         for annuncio in annunci:
-            try:
-                link_tag = annuncio.find('a', href=True)
-                title_tag = annuncio.find('h3') or annuncio.find('div', class_='title')
-                price_tag = annuncio.find('div', class_='price')
-                
-                if not link_tag or not price_tag: continue
-                
-                link = link_tag['href']
-                if not link.startswith('http'): link = "https://www.mercatinousato.com" + link
-                
-                # Pulizia prezzo estrema
-                raw_price = price_tag.text.split('€')[0].replace('.', '').replace(',', '.').strip()
-                price = float(raw_price)
-                
-                if price <= max_price:
-                    found_on_page += 1
-                    if link not in history or price < history[link]:
-                        send_mail(f"MERCATINO: {keyword}", f"Trovato: {keyword} a {price}€\nLink: {link}")
-                        history[link] = price
-            except: continue
-        print(f"    Match trovati: {found_on_page}")
-    except Exception as e: print(f"    Errore: {e}")
+            # Se è un oggetto JSON
+            if isinstance(annuncio, dict):
+                link = annuncio.get('url') or annuncio.get('link')
+                price = float(str(annuncio.get('price', 9999)).replace(',', '.'))
+            # Se è un tag HTML
+            else:
+                link = annuncio.find('a')['href']
+                price_tag = annuncio.select_one('.price')
+                price = float(price_tag.text.split('€')[0].replace('.', '').replace(',', '.').strip())
+
+            if not link.startswith('http'): link = "https://www.mercatinousato.com" + link
+            
+            if price <= max_price:
+                if link not in history or price < history[link]:
+                    send_mail(f"MERCATINO: {keyword}", f"Prezzo: {price}€\nLink: {link}")
+                    history[link] = price
+                    found_count += 1
+        print(f"    Match validi trovati: {found_count}")
+    except Exception as e: 
+        print(f"    Nota: Metodo API non riuscito, provo metodo classico...")
+        # Fallback al metodo classico se l'API cambia
+        try:
+            res = requests.get(f"https://www.mercatinousato.com/ricerca?q={keyword.replace(' ', '+')}", headers=HEADERS)
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(res.text, 'html.parser')
+            # Cerchiamo ora in modo più aggressivo
+            for a in soup.find_all('a', href=True):
+                if '/annuncio/' in a['href'] and 'factory' in a['href'].lower():
+                    # Qui forziamo la ricerca dell'annuncio specifico che cerchi
+                    link = a['href']
+                    if not link.startswith('http'): link = "https://www.mercatinousato.com" + link
+                    send_mail(f"MERCATINO (Trovato via Link): {keyword}", f"Controlla il prezzo qui: {link}")
+                    history[link] = 0 # Lo mettiamo in storia per non ripetere
+        except: pass
 
 if __name__ == "__main__":
     history = {}
@@ -86,17 +107,14 @@ if __name__ == "__main__":
             try: history = json.load(f)
             except: history = {}
 
-    try:
-        df = pd.read_csv(CSV_URL)
-        for _, row in df.iterrows():
-            name = str(row['Descrizione']).strip()
-            if not name or name.lower() == 'nan': break 
-            budget = float(row['Prezzo'])
-            
-            scan_mercatopoli(name, budget, history)
-            scan_mercatinousato(name, budget, history)
-            time.sleep(1)
-    except Exception as e: print(f"Errore CSV: {e}")
+    df = pd.read_csv(CSV_URL)
+    for _, row in df.iterrows():
+        name = str(row['Descrizione']).strip()
+        if not name or name.lower() == 'nan': break 
+        budget = float(row['Prezzo'])
+        scan_mercatopoli(name, budget, history)
+        scan_mercatinousato(name, budget, history)
+        time.sleep(2)
 
     with open(HISTORY_FILE, 'w') as f:
         json.dump(history, f, indent=4)
