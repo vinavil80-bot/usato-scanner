@@ -38,18 +38,27 @@ def send_mail(subject, body):
 # ---------------- NEGOZI ----------------
 
 def get_stores():
-    print("--- Caricamento negozi ---")
-    r = requests.get(f"{BASE_URL}/contatti/negozi", headers=HEADERS, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
+    print("--- Mappatura Negozi Reali (API) ---")
+    stores = []
 
-    stores = set()
-    for a in soup.select("a[href^='/negozi/']"):
-        href = a["href"]
-        if href.count("/") >= 3:
-            stores.add(urljoin(BASE_URL, href))
+    url = "https://www.mercatinousato.com/api/negozi"
 
-    print(f"   Negozi trovati: {len(stores)}")
-    return sorted(stores)
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=20)
+        res.raise_for_status()
+        data = res.json()
+
+        for n in data:
+            slug = n.get("slug")
+            if slug:
+                stores.append(f"https://www.mercatinousato.com/negozi/{slug}/")
+
+    except Exception as e:
+        print("Errore recupero negozi:", e)
+
+    print(f"Totale negozi trovati: {len(stores)}")
+    return sorted(set(stores))
+
 
 # ---------------- PREZZO ----------------
 
