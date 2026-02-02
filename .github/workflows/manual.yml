@@ -1,36 +1,25 @@
-name: Usato Scanner Check
+name: Usato Scanner
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # Gira ogni 6 ore
-  workflow_dispatch: # Permette l'avvio manuale (quello che serve a noi ora)
+    - cron: "*/30 * * * *"
 
 jobs:
-  build:
+  scan:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout del codice
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: "3.10"
 
-      - name: Installazione librerie
+      - name: Install Playwright
         run: |
-          pip install requests beautifulsoup4 pandas
+          pip install playwright pandas
+          playwright install chromium
 
-      - name: Esecuzione Scanner
+      - name: Run scanner
         run: python scanner.py
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-
-      - name: Salva cronologia prezzi
-        run: |
-          git config --global user.name 'Scanner Bot'
-          git config --global user.email 'bot@github.com'
-          git add price_history.json || true
-          git commit -m "Aggiornamento prezzi" || true
-          git push || true
