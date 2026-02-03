@@ -1,125 +1,76 @@
 from playwright.sync_api import sync_playwright
 from urllib.parse import urljoin
-import time
 
-BASE_URL = "https://www.mercatinousato.com"
 MAX_PRICE = 400.0
 
 KEYWORDS = [
-    "la pavoni caffe",
-    "pavoni caffe",
-    "pavoni leva",
-    "macchina caffe leva",
-    "caffe leva",
-    "gaggia leva",
-    "gaggia caffe leva",
-    "gaggia factory",
-    "san marco leva",
-    "faema leva",
-    "faemina leva",
-    "faemina caffe",
-    "faema caffe"
+    "pavoni",
+    "gaggia",
+    "faema",
+    "faemina",
+    "leva",
+    "san marco"
 ]
 
-# =========================
-# SEARCH
-# =========================
-def search_keyword(page, keyword):
-    search_url = f"{BASE_URL}/search/prod/{keyword.replace(' ', '-')}"
+BASE_SEARCH = "https://www.mercatinousato.com/search/prod/"
+
+def scan_keyword(page, keyword):
+    url = BASE_SEARCH + keyword.replace(" ", "-")
     print(f"\n🔍 RICERCA: {keyword}")
 
-    page.goto(search_url, timeout=60000)
-    page.wait_for_selector("body", timeout=15000)
-
-    # scroll per forzare caricamento JS
-    page.mouse.wheel(0, 3000)
-    page.wait_for_timeout(3000)
-
-    links = set()
-
-    for a in page.locator("a").all():
-        href = a.get_attribute("href")
-        if href and "/casa-e-cucina/" in href:
-            links.add(urljoin(BASE_URL, href.split("?")[0]))
-
-    print(f"   ➜ Inserzioni trovate: {len(links)}")
-    return list(links)
-
-# =========================
-# PRODUCT SCAN
-# =========================
-def scan_product(page, url):
     page.goto(url, timeout=60000)
+    page.wait_for_selector(".list-product-minibox")
 
-    try:
-        page.wait_for_selector("h1[itemprop='name']", timeout=10000)
+    results = []
 
-        title = page.locator("h1[itemprop='name']").inner_text().strip()
+    boxes = page.locator(".list-product-minibox")
+    count = boxes.count()
+    print(f"   ➜ Trovati {count} prodotti")
 
-        price_raw = page.locator("span[itemprop='price']").get_attribute("textContent")
-        if not price_raw:
-            return None
+    for i in range(count):
+        box = boxes.nth(i)
 
-        price = float(price_raw.replace(",", ".").strip())
+        try:
+            title = box.locator(".list-product-title span").inner_text().lower()
+            price = float(
+                box.locator("meta[itemprop='price']")
+                .get_attribute("content")
+            )
+            link = box.locator("a").get_attribute("href")
 
-        description = ""
-        if page.locator("p[itemprop='description']").count() > 0:
-            description = page.locator("p[itemprop='description']").inner_text().strip()
+            if not any(k in title for k in KEYWORDS):
+                continue
 
-        return {
-            "title": title,
-            "price": price,
-            "url": url,
-            "description": description
-        }
+            if price <= MAX_PRICE:
+                results.append({
+                    "title": title,
+                    "price": price,
+                    "url": link
+                })
 
-    except Exception:
-        return None
+                print(f"   ✅ {title} – {price}€")
 
-# =========================
-# MAIN
-# =========================
+        except Exception as e:
+            print(f"   ⚠️ Errore parsing prodotto: {e}")
+
+    return results
+
+
 def main():
-    risultati = []
+    found = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        for keyword in KEYWORDS:
-            links = search_keyword(page, keyword)
-
-            if not links:
-                print("   ⚠️ Nessun risultato trovato")
-                continue
-
-            for link in links:
-                data = scan_product(page, link)
-                if not data:
-                    continue
-
-                if data["price"] <= MAX_PRICE:
-                    risultati.append(data)
-                    print(f"   ✅ {data['title']} – {data['price']}€")
-                else:
-                    print(f"   ❌ Scartato ({data['price']}€)")
-
-                time.sleep(1)
+        for kw in KEYWORDS:
+            found.extend(scan_keyword(page, kw))
 
         browser.close()
 
-    print("\n=======================")
-    print("🎯 RISULTATI FINALI")
-    print("=======================")
-
-    if not risultati:
-        print("Nessuna inserzione sotto budget.")
-    else:
-        for r in risultati:
-            print(f"\n🟢 {r['title']}")
-            print(f"   💰 {r['price']}€")
-            print(f"   🔗 {r['url']}")
+    print("\n🎯 RISULTATI FINALI")
+    for r in found:
+        print(f"\n🟢 {r['title']}\n💰 {r['price']}€\n🔗 {r['url']}")
 
 if __name__ == "__main__":
     main()
-
