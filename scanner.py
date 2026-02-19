@@ -4,12 +4,12 @@ from urllib.parse import urljoin
 MAX_PRICE = 400.0
 
 KEYWORDS = [
-    "pavoni",
+    "la pavoni",
     "gaggia",
     "faema",
     "faemina",
-    "leva",
-    "san marco"
+    "caffe leva",
+    "san marco caffe"
 ]
 
 BASE_SEARCH = "https://www.mercatinousato.com/search/prod/"
